@@ -1,0 +1,121 @@
+/*  
+======================================
+
+### Generate AU per period ###
+Origin Collection: 9
+Collection: 10
+contact: ma.hirye@alumni.usp.br
+
+=======================================
+*/
+
+
+
+/****** Initial info: review and update version, description and output folder ******/
+var Col = "10";
+var version = "v0"; 
+
+var desc = "AU per period (5 years), legend: "+
+  "0= non urbanized; 1= urbanized in 1985; 2= urbanized between 1986 and 1990; "+
+  "3= urbanized between 1991 and 1995; 4= urbanized between 1996 and 2000; 5=urbanized between 2001 and 2005"+
+  "6= urbanized between 2006 and 2010; 7= urbanized between 2011 and 2015; 8=urbanized between 2016 and 2020"+
+  "9=urbanized between 2021 and 2024"
+  ;
+var asset_name = "AUperPeriod_05years_"+version;
+
+var folder_output = 'projects/ee-mburb-land-c10/assets/UrbPeriod/';
+print("folder_output: ", folder_output);
+
+var esc = 30;
+
+
+/****** Check if destination folder exists and if not, create it ******/
+try {ee.data.getAsset(folder_output);} catch (e) {ee.data.createAsset({'type': 'Folder'}, folder_output);}
+
+
+
+/****** Create years lists ******/
+var list_years = ee.List.sequence(1985,2024,1).getInfo();
+
+
+
+/****** Function to export ******/
+var export2col = function(IMAGE, ASSET_PATH, ASSET_NAME, ROI, ESC){
+  Export.image.toAsset({
+      "image": IMAGE.toInt8(),
+      "description": ASSET_NAME,
+      "assetId": ASSET_PATH+ASSET_NAME,
+      "region": ROI,
+      "scale": ESC,
+      "pyramidingPolicy": {'.default': 'mode'},
+      "maxPixels": 1e13
+  });
+};
+
+
+
+/****** Get Asset Collection 10 ******/
+var C10 = ee.Image("projects/mapbiomas-public/assets/brazil/lulc/collection10/mapbiomas_brazil_collection10_integration_v2");
+print("C10", C10);
+Map.addLayer(C10, {}, "C10", false);
+
+
+var bbox = ee.FeatureCollection("users/mahirye_usp/BR_BBOX_4326").first().geometry();
+Map.addLayer(bbox, {}, "bbox", false);
+
+
+
+/****** Get Urbanization per Periods - 5 years ******/
+var C10_urb_years = ee.Image([]);
+
+list_years.forEach(function(year) {
+  var C10_urb_year = C10.select("classification_"+year)
+    .eq(24).unmask()
+    .remap([0,1], [3000, year])
+    .rename("classification_"+year);
+  C10_urb_years = C10_urb_years.addBands(C10_urb_year);
+});
+
+print("C10_urb_years", C10_urb_years);
+// Map.addLayer(C10_urb_years, {}, "C10_urb_years");
+
+var C10_urb_years_min = C10_urb_years.reduce(ee.Reducer.min());
+print("C10_urb_years_min", C10_urb_years_min);
+// Map.addLayer(C10_urb_years_min, {}, "C10_urb_years_min");
+
+var C10_urb_periodo_5anos = C10_urb_years_min.remap(
+  [1985, 
+   1986, 1987, 1988, 1989, 1990, 
+   1991, 1992, 1993, 1994, 1995, 
+   1996, 1997, 1998, 1999, 2000, 
+   2001, 2002, 2003, 2004, 2005, 
+   2006, 2007, 2008, 2009, 2010, 
+   2011, 2012, 2013, 2014, 2015, 
+   2016, 2017, 2018, 2019, 2020, 
+   2021, 2022, 2023, 2024,
+   3000],
+  [   1,    
+      2,    2,    2,    2,    2,    
+      3,    3,    3,    3,    3, 
+      4,    4,    4,    4,    4, 
+      5,    5,    5,    5,    5, 
+      6,    6,    6,    6,    6, 
+      7,    7,    7,    7,    7, 
+      8,    8,    8,    8,    8, 
+      9,    9,    9,    9,
+      0]
+   )
+print("C10_urb_periodo_5anos", C10_urb_periodo_5anos);
+Map.addLayer(C10_urb_periodo_5anos, {min:0, max:9, palette:["white","bfbfbf","c0afc8","a8a9db","9f8ed2","7d7ed3","7a6fc9","b05ea6","b73875","930000"]}, "C10_urb_periodo_5anos", false);
+
+
+  C10_urb_periodo_5anos = C10_urb_periodo_5anos
+    .set('territory', 'BRAZIL')
+    .set('theme', 'Urban Area')
+    .set('source', 'GT URBANO')
+    .set('collection_id', Col)
+    .set('version', version)
+    .set("description", desc)
+  ;
+  
+export2col (C10_urb_periodo_5anos, folder_output, asset_name, bbox, esc);
