@@ -1,0 +1,428 @@
+/*
+====================================== 
+
+### Urban Vegetation ###
+Get Veg Intra and apply post-processing
+Collection: 10
+contact: ma.hirye@alumni.usp.br
+
+=======================================
+*/
+
+
+/****** Initial info: version, description and output folder ******/
+var vers_output = "v8"; 
+var step = "D-PP_VegIntra"; 
+print("step: "+ step);
+
+var Col_vers = "Col10publ";
+
+var vers_step = "C10_VegUrb_"+step+"_"+vers_output; 
+var output_path = "projects/ee-mburb-land-c10/assets/Vegetation-test/"+vers_step;
+var folderType = 'ImageCollection';
+print("output_path: "+ output_path);
+
+var description = "Urban Vegetation - IntraUrban vegetation from probability harm gte50 with GapFill, incorporating all holes. Post-processing: spatial filter 1 (gte("+thres_SF_1+"), temporal filter, consecutive frequency filter (at least "+ thres_FF +" consecutive years of intra-urban vegetation) and spatial 2 (gte("+thres_SF_2+")). Final legend: 0=non-urban; 240=urban non-veg; 241=urban veg;[varies ids]=holes with original id from Collection 10";
+
+
+
+/****** Define thresholds and scale ******/
+
+var thres_SF_1 = 2; //threshold for Spatial Filter 1: eliminates isolated groups of 1 or 2 pixels, both from intra-urban vegetation and from the background
+var thres_SF_2 = 5; //threshold for Spatial Filter 2: retains as intra-urban vegetation only groups of 5 or more pixels
+var thres_FF = 5; //threshold for Frequency Filter: eliminates intra-urban vegetation pixels that are not consecutive for more than 5 years
+
+var escala = 30;
+
+
+
+/****** Check if destination folder exists and if not, create it ******/
+
+try {
+  ee.data.getAsset(output_path);
+  print('✅ Destination folder already exists:', output_path);
+} catch (e) {
+  print('Destination folder does not exist. Attempting to create:', output_path);
+  try {
+    ee.data.createAsset({type: folderType}, output_path);
+    print('✅ Successfully created destination folder:', output_path);
+  } catch (create_e) {
+    print('❌ Failed to create destination folder:', output_path);
+    print('Error:', create_e);
+  }
+}
+
+/****** Create years lists ******/
+var listYears = ee.List.sequence(1985,2024,1).getInfo();
+
+
+
+/****** Define ROIs and year to test ******/
+
+var useROI = false; //if false, script will run for the whole country and export results by defined grids
+
+var ROI = SP_test;
+var useROI = true; //if true, script will run only for ROI area and will not export results
+
+
+
+
+/****** Get Grids for exporting data ******/
+var cartas1mi = ee.FeatureCollection("projects/ee-mburb/assets/BASES/Cartas_1mi_4326");
+Map.addLayer(cartas1mi, {}, "cartas1mi", false);
+var list_cartas1mi = cartas1mi.aggregate_array("grid_name").getInfo();
+
+
+
+/****** Functions and palettes ******/
+var Palettes = require('users/mapbiomas/modules:Palettes.js');
+var palette_C9 = Palettes.get('classification9');
+// print(palette_C9)
+
+// palette_vegFinal
+var F_Palettes = require('users/mayhirye/Publ:Col10/F_Palettes');
+var palette_C10_VegUrb_v8 = F_Palettes.get('palette_C10_VegUrb_v8');
+// print(palette_C10_VegUrb_v8);
+var palette_C10 = F_Palettes.get('palette_C10');
+// print(palette_C10);
+
+
+  var exp = function (IM, DESC, ID, REG, SC){
+    Export.image.toAsset({
+      image:  IM,
+      description:  DESC,
+      assetId:  ID,
+      region:  REG,
+      scale:  SC,
+      maxPixels:  100000000000,
+      pyramidingPolicy: {".default": "mode"},
+    });
+  };
+
+
+
+/****** IDs to remap Holes ******/  
+///cods_remap_AUeHoles: 0=non-urban; 1=holes veg; 3=urban,  4=water
+
+var cods_AUeHoles = [
+  1,3,4,5,6,49,10,11,12, //vegetation
+  32,29, //non-vegetation
+  50,14,15,18,19,39,20,40,62,41,36,46,47,35,48,9,21,//vegetation
+  22,23,24,30,75,25, //non-vegetation
+  26,33,31, //water
+  27 //no observed
+];
+
+var cods_remap_AUeHoles = [
+  1,1,1,1,1,1,1,1,1,
+  1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+  1,1,3,1,1,1,
+  4,4,4,
+  0
+];
+
+
+
+/****** Get Assets ******/
+
+///****** Vegetation from urban probability: dataset from RF probability, in which 1:urban and 0:non-urban
+var veg_prob_prob_gte50 = ee.ImageCollection("projects/ee-mburb-land-c10/assets/Vegetation/C10_VegUrb_B-GF_v13_C10_probharm_gte50").mosaic();
+// print("veg_prob_prob_gte50: ", veg_prob_prob_gte50);
+
+
+///****** Urban Area + Holes
+var ColAUeHoles = ee.ImageCollection('projects/ee-mburb-land-c10/assets/Vegetation/C10_VegUrb_A-AUeHoles_v1');
+// print("ColAUeHoles", ColAUeHoles);
+
+///Get one band, by reducing all three bands (classification_year = AU; HolesClass_lt250ha_year = holes lower than 250ha; HolesClass_lt250ha_year = holes greater or equal than 250ha)
+///Cast to image format: one band per year
+var list_ColAUeHoles_classification = listYears.map(function(year) {
+    var imgYear = ee.Image(ColAUeHoles.filter(ee.Filter.eq("year", year)).first());
+    var imgReduced = imgYear.reduce(ee.Reducer.max()).rename("reduced_"+year);
+    return imgReduced;
+  });
+var ColAUeHoles_classification = ee.ImageCollection(ee.List(list_ColAUeHoles_classification)).toBands();
+var list = listYears.map(function(year) { return "classification_"+year });
+ColAUeHoles_classification = ColAUeHoles_classification.rename(list);
+// print("ColAUeHoles_classification", ColAUeHoles_classification);
+// Map.addLayer(ColAUeHoles_classification, {bands:["classification_1985"], min:0, max:75, palette:palette_C10}, "ColAUeHoles_classification", true);
+
+
+///****** Clip if useROI = true
+if (useROI) {
+  ColAUeHoles_classification = ColAUeHoles_classification.clip(ROI);
+  veg_prob_prob_gte50 = veg_prob_prob_gte50.clip(ROI);
+  Map.centerObject(ROI);
+}
+
+
+//****** Check
+var year_check = 2024;
+Map.addLayer(ColAUeHoles_classification, {bands:"classification_"+year_check, min:0, max:75, palette:palette_C10}, "ColAUeHoles_classification", true);
+Map.addLayer(veg_prob_prob_gte50, {bands:"classification_"+year_check, min:0, max:1, palette:["green", "red"]}, "veg_prob_prob_gte50", true);
+
+
+
+/****** Spatial Filter 1 ******/ 
+///Eliminates vegetation and non-vegetation isolated pixels, keeping .gte(thres_SF_1=2)
+
+// var listYears = [2024];
+  
+var list_veg_SF = ee.List([]);
+
+  listYears.forEach(function(year){
+    // print("year: "+year);
+    
+    ///****** Get imAUeHoles per year
+    var imAUeHoles = ColAUeHoles_classification.select("classification_"+year);
+    // Map.addLayer(imAUeHoles, {bands:"classification_"+year, min: 0, max: 75, palette:palette_C10, opacity:0.5},"imAUeHoles "+year, false);
+    
+    var imAUeHoles_remap = imAUeHoles.remap(cods_AUeHoles, cods_remap_AUeHoles);
+    // Map.addLayer(imAUeHoles_remap, {min:0, max:4, palette: ["black", "green", "yellow", "red", "blue"]}, "imAUeHoles_remap", false);
+    
+    var imAUeHoles_24 = imAUeHoles.eq(24);
+    // Map.addLayer(imAUeHoles_24, {min:0, max:1, palette:["black", "red"]}, "imAUeHoles_24", false);
+    
+    ///****** Get Probability in Urban Area per year
+    var im_GF = veg_prob_prob_gte50.select("classification_"+year).eq(0).updateMask(imAUeHoles_24).unmask();
+    // Map.addLayer(im_GF, {min:0, max:1, palette:["black", "green"]}, "im_GF", false);
+    
+    ///****** Get Holes 
+    var imAUeHoles_Holes = imAUeHoles_remap.eq(1)
+    // Map.addLayer(imAUeHoles_Holes, {min:0, max:1, palette:["black", "green"]}, "imAUeHoles_remap0or1", false);
+
+    ///****** Get Probability in Urban Area and Holes
+    var veg_year = im_GF.add(imAUeHoles_Holes).gte(1);
+    // Map.addLayer(veg_year, {min:0, max:1, palette:["white", "green"]}, "veg_year", false);
+  
+    ///****** Apply SF in veg
+    var mask_SF = veg_year
+      .eq(1).selfMask()
+      .connectedPixelCount({maxSize:10, eightConnected:true,});
+    // Map.addLayer(mask_SF.reproject({crs:'EPSG:4326', scale:30}), {min:0, max:10}, "mask_SF "+year, true);
+    // print("mask_SF", mask_SF);
+    
+    var im_veg_year_SF = mask_SF.gte(thres_SF_1).unmask();
+    // Map.addLayer(im_veg_year_SF.reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "blue"]}, "im_veg_year_SF "+year, true);
+    // print("im_veg_year_SF", im_veg_year_SF);
+    
+    ///****** Apply SF in non-veg
+    var mask_SF_inv = im_veg_year_SF.remap([0,1],[1,0])
+      .eq(1).selfMask()
+      .connectedPixelCount({maxSize:10, eightConnected:true,});
+    // Map.addLayer(mask_SF_inv.reproject({crs:'EPSG:4326', scale:30}), {min:0, max:10}, "mask_SF_inv "+year, true);
+    // print("mask_SF_inv", mask_SF_inv);
+    
+    var im_veg_year_SF_inv = mask_SF_inv.gte(thres_SF_1).unmask();
+    // Map.addLayer(im_veg_year_SF_inv.reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "blue"]}, "im_veg_year_SF_inv "+year, true);
+    // print("im_veg_year_SF_inv", im_veg_year_SF_inv);
+      
+    ///****** prepare list
+    list_veg_SF = list_veg_SF.add(im_veg_year_SF_inv.remap([0,1],[1,0]).rename("classification_"+year).set("year", year).set('system:time_start', ee.Date.fromYMD(year, 8, 1).millis())); 
+    
+  });
+
+var col_veg_SF_1 = ee.ImageCollection(list_veg_SF);    
+// Map.addLayer(ee.Image(col_veg_SF_1.filter(ee.Filter.eq("year", year_check)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "blue"]}, "col_veg_SF_1 "+year_check, true);
+// print("col_veg_SF_1", col_veg_SF_1);
+
+
+
+/****** Temporal Filter 1 ******/
+///Eliminates vegetation pixels where the previous year and the following year were non-vegetation, or vice versa (non-vegetation followed by vegetation).
+///The first year considers itself and the two following years.
+///Filter is not applied in last year
+
+///****** function
+var TempFilter = function(LIST_YEARS, VAL1, VAL2, COL_IN){
+  var COL = COL_IN ;
+  LIST_YEARS.forEach(function(year){
+    // print("year: "+year);
+    var veg_year = COL.filter(ee.Filter.eq("year", year)).first();
+    var year1 = ee.Number(year).add(VAL1).getInfo();
+    var year2 = ee.Number(year).add(VAL2).getInfo();
+    
+    var veg_year1 = COL.filter(ee.Filter.eq("year", year1)).first();
+    var veg_year2 = COL.filter(ee.Filter.eq("year", year2)).first();
+    
+    var veg_year_filt = veg_year.where(veg_year.eq(0).and(veg_year1.eq(1)).and(veg_year2.eq(1)), 1);
+    veg_year_filt = veg_year_filt.where(veg_year_filt.eq(1).and(veg_year1.eq(0)).and(veg_year2.eq(0)), 0);
+    
+    COL = ee.ImageCollection(COL).filter(ee.Filter.neq("year", year)).merge(ee.ImageCollection([veg_year_filt]));
+    
+  });
+  
+  return COL;
+};
+
+
+///****** apply function in the first year (1985), middle years (1986 to 2023) and last year (2024)
+var TF_first = TempFilter ([1985], 1, 2, col_veg_SF_1);
+// print("TF_first", TF_first);
+// Map.addLayer(ee.Image(TF_first.filter(ee.Filter.eq("year", 1985)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "yellow"]}, "TF_first 1985", true);
+
+var TF_Middle = TempFilter (ee.List.sequence(1986,2023,1).getInfo(), 1, -1, TF_first);
+// print("TF_Middle", TF_Middle);
+// Map.addLayer(ee.Image(TF_Middle.filter(ee.Filter.eq("year", 2000)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "yellow"]}, "TF_Middle 2000", true);
+
+ 
+var col_TF = TF_Middle;
+// print("col_TF", col_TF);
+// Map.addLayer(ee.Image(col_TF.filter(ee.Filter.eq("year", year_check)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "magenta"]}, "col_TF "+year_check, true);
+
+
+
+/****** Temporal Filter 2: Consecutive Frequency ******/
+// Keeps vegetation only if it persists for a minimum of thres_FF = 5 consecutive years
+// Early years of a persistent vegetation patch are removed, since there is no special protection at the beginning of the time series.
+// Any pixel that is vegetation in 2023 or 2024 is kept, even if it has a persistance lower that  thres_FF
+
+var years_FF = ee.List.sequence(1985, 2024);
+
+
+///****** Convert collection to list
+var colList = col_TF.toList(col_TF.size()); // Convert collection to list
+var initCount = ee.Image(0); // Initialize an empty image for consecutive count
+
+
+///****** Function to compute consecutive vegetation
+var consecutiveFilter = function(yearIndex, state) {
+  state = ee.List(state);
+  var prevCount = ee.Image(state.get(0));
+  var filteredList = ee.List(state.get(1));
+
+  var img = ee.Image(colList.get(yearIndex));
+  var year = ee.Number(img.get('year'));
+  var isVeg = img.eq(1);
+
+  ///Update consecutive count: if vegetation, add 1; else reset to 0
+  var newCount = prevCount
+    .where(isVeg, prevCount.add(1))
+    .where(isVeg.not(), 0);
+
+  ///Special rule for last years: if not enough years left, keep pixels that are vegetated
+  var yearsLeft = ee.Number(years_FF.get(-1)).subtract(year).add(1);
+
+  var keepMask = ee.Image(0)
+    .where(newCount.gte(thres_FF), 1) // standard
+    .where(ee.Image.constant(yearsLeft.lt(thres_FF)).and(isVeg), 1); // last years
+
+  ///Apply mask and rename band
+  var keep = img.updateMask(keepMask)
+                .rename('classification')
+                .set('year', year)
+                .set('system:time_start', img.get('system:time_start'));
+
+  filteredList = filteredList.add(keep);
+
+  return ee.List([newCount, filteredList]);
+  
+};
+
+
+///****** Iterate over years
+var list_veg_FF = ee.List.sequence(0, col_TF.size().subtract(1))
+  .iterate(consecutiveFilter, ee.List([initCount, ee.List([])]));
+
+
+///****** Get Image Collection
+var filteredList = ee.List(ee.List(list_veg_FF).get(1));
+var col_veg_FF2 = ee.ImageCollection(filteredList);
+// print("col_veg_FF2:", col_veg_FF2);
+// Map.addLayer(ee.Image(col_veg_FF2.filter(ee.Filter.eq("year", 2024)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "magenta"]}, "col_veg_FF2 2024", true);
+// Map.addLayer(ee.Image(col_veg_FF2.filter(ee.Filter.eq("year", 2000)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "magenta"]}, "col_veg_FF2 2000", true);
+
+
+
+/****** Spatial Filter 2 ******/
+///Eliminates vegetation clusters of pixels .lt(thres_SF_2)
+
+var list_veg_SF = ee.List([]);
+
+  listYears.forEach(function(year){
+    // print("year: "+year);
+    
+    // var veg_year = col_veg_FF2.filter(ee.Filter.eq("year", year)).first(); //NOT USING THIS ???????????
+    var veg_year = col_TF.filter(ee.Filter.eq("year", year)).first();
+    
+    var mask_SF = veg_year
+      .eq(1).selfMask()
+      .connectedPixelCount({maxSize:10, eightConnected:true,});
+    // Map.addLayer(mask_SF.reproject({crs:'EPSG:4326', scale:30}), {min:0, max:10}, "mask_SF "+year, true);
+    // print("mask_SF", mask_SF);
+    
+    var im_veg_year_SF = mask_SF.gte(thres_SF_2).unmask();
+    // Map.addLayer(im_veg_year_SF.reproject({crs:'EPSG:4326', scale:30}), {min:1, max:1, palette: ["white", "green", "red", "blue"]}, "im_veg_year_SF "+year, true);
+    // print("im_veg_year_SF", im_veg_year_SF);
+      
+    list_veg_SF = list_veg_SF.add(im_veg_year_SF.set("year", year).set('system:time_start', ee.Date.fromYMD(year, 8, 1).millis())); 
+    
+  });
+
+var col_veg_SF_2 = ee.ImageCollection(list_veg_SF);
+// print("col_veg_SF_2", col_veg_SF_2);
+// Map.addLayer(ee.Image(col_veg_SF_2.filter(ee.Filter.eq("year", 2024)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "green"]}, "col_veg_SF_2 2024", true);
+
+
+
+/****** Assemble dataset ******/ 
+var list_FINAL = ee.List([]);
+
+  listYears.forEach(function(year){
+    // print("year: "+year);
+    
+    ///****** Get AU+Holes and remap AU from 24 to 240
+    var ColAUeHoles_classification_year = ColAUeHoles_classification.select("classification_"+year);
+    ColAUeHoles_classification_year = ColAUeHoles_classification_year.where(ColAUeHoles_classification_year.eq(24), 240);
+    // Map.addLayer(ColAUeHoles_classification_year.reproject({crs:'EPSG:4326', scale:30}), {palette:palette_C10_VegUrb_v8, min:0, max:243}, "ColAUeHoles_classification_year", true);
+    
+    ///****** Get IntraUrban Vegetation (from au probability + filters)
+    var veg_year = col_veg_SF_2.filter(ee.Filter.eq("year", year)).first().updateMask(ColAUeHoles_classification_year.eq(240));
+    // Map.addLayer(veg_year.reproject({crs:'EPSG:4326', scale:30}), {}, "veg_year", true);
+    
+    ///****** Final Assemble
+    var final_assemble = ColAUeHoles_classification_year.add(veg_year.unmask());
+    // Map.addLayer(final_assemble.reproject({crs:'EPSG:4326', scale:30}), {palette:palette_C10_VegUrb_v8, min:0, max:243}, "final_assemble", true);
+    
+    list_FINAL = list_FINAL.add(final_assemble.set("year", year).set('system:time_start', ee.Date.fromYMD(year, 8, 1).millis())); 
+    
+  });
+
+var col_veg_FINAL = ee.ImageCollection(list_FINAL);
+print("col_veg_FINAL", col_veg_FINAL);
+Map.addLayer(ee.Image(col_veg_FINAL.filter(ee.Filter.eq("year", 1985)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max: 243, palette: palette_C10_VegUrb_v8}, "col_veg_FINAL "+year_check)
+Map.addLayer(ee.Image(col_veg_FINAL.filter(ee.Filter.eq("year", year_check)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max: 243, palette: palette_C10_VegUrb_v8}, "col_veg_FINAL "+year_check)
+
+
+
+/****** Export ******/
+if(!useROI) {
+  var years = ee.List.sequence(1985,2024,1).getInfo();
+  var veg_final = col_veg_FINAL;
+  
+  var im_veg = ee.Image([]);
+    years.forEach(function(year){
+      // print("year: "+year);
+      var im_year = col_veg_FINAL.filter(ee.Filter.eq("year", year)).first();
+      im_veg = im_veg.addBands(im_year.rename("classification_"+year));
+      // Map.addLayer(im_veg, {}, "im_veg "+year, false);
+    });
+  
+  im_veg = im_veg
+      .set("collection_version", Col_vers)
+      .set("description", description)
+      .set("version", vers_step);
+  
+  // print("im_veg", im_veg);
+  // Map.addLayer(im_veg, {}, "im_veg", true);
+
+  list_cartas1mi.forEach(function(grid){
+    // print(">>>>>>>>>>" + grid + "<<<<<<<<<<");
+    var carta = cartas1mi.filter(ee.Filter.eq("grid_name", grid));
+    im_veg = im_veg
+      .set("grid_name", grid);
+    exp (im_veg, "im_veg"+grid, output_path+"/"+grid, carta.geometry(), escala);
+    // Map.addLayer(im_veg, {}, "im_veg "+grid, false);
+  });
+}
