@@ -1,0 +1,185 @@
+/*  
+======================================
+
+### Urban Vegetation ###
+Collection: 10
+contact: ma.hirye@alumni.usp.br
+
+=======================================
+*/
+
+
+/****** Initial info: version, description and output folder ******/
+var vers = "v1";
+var step = "A-AUeHoles"; 
+print("step: "+ step);
+
+var vers_step = "C10_VegUrb_"+step+"_"+vers; 
+var output_path = "projects/ee-mburb-land-c10/assets/Vegetation-test/"+vers_step;
+var folderType = 'ImageCollection'
+try {ee.data.getAsset(output_path);} catch (e) {ee.data.createAsset({'type': folderType}, output_path);}
+print("output_path: ", output_path);
+
+
+var description = "Urban Vegetation - AU+Holes - version: "+vers+" - Collection 10. Three bands:classification_year = AU; HolesClass_lt250ha_year = holes lower than 250ha; HolesClass_lt250ha_year = holes greater or equal than 250ha. Classes follow Collection 10 codes. Use .reduce(ee.Reducer.max()) to get one band image of AU+holes.";
+
+
+
+
+/****** Functions and palettes ******/
+var escala = 30;
+
+var listYears = ee.List.sequence(1985,2020,1).getInfo();
+var listYears = [2024];
+
+var Palettes = require('users/mapbiomas/modules:Palettes.js'); 
+var palette_C9 = Palettes.get('classification9');
+
+  var exp = function (IM, DESC, ID, REG, SC){
+    Export.image.toAsset({
+      image:  IM,
+      description:  DESC,
+      assetId:  ID,
+      region:  REG,
+      scale:  SC,
+      maxPixels:  100000000000,
+      pyramidingPolicy: {".default": "mode"},
+    });
+  };
+
+
+
+/****** Get Data ******/
+
+///////////////Coleção 10 integrada e pública - v2
+var Col10 = ee.Image('projects/mapbiomas-public/assets/brazil/lulc/collection10/mapbiomas_brazil_collection10_coverage_v2');
+// Map.addLayer(Col10.eq(24), {}, "Col10", false);
+
+
+///////////////Limite Brasil
+var BR = ee.FeatureCollection("users/mahirye_usp/LimBR_2019");
+var BR_BB = BR.geometry().bounds();
+
+
+
+/****** RUN ******/
+
+listYears.forEach(function(year){
+  print("***************** "+year);
+  
+  
+  // COL10
+  var Col10_year = Col10.select("classification_"+year)
+  // Map.addLayer(Col10.reproject({crs:'EPSG:4326',scale:30}), {bands:"classification_"+year, min: 0, max: 69, palette:palette_C9, opacity:0.5},"C10_intV2 "+year, false);
+
+  var Col10_AU = Col10_year.eq(24).remap([0,1],[0,24]);
+  // Map.addLayer(Col10_AU.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"Col10_AU "+year, true);
+
+
+  ///////////////Get Holes - vector
+  var Holes_vector = ee.FeatureCollection('projects/ee-mburb-land-c10/assets/Vegetation/Holes_v1/Holes_'+year+'_All');
+  // var Holes_vector = ee.FeatureCollection('projects/ee-mburb-land-c10/assets/Vegetation/Holes/Holes_'+year+'_All');
+  // Map.addLayer(Holes_vector, {}, "Holes_vector "+year, false)
+  var Holes_vector_lt250ha = Holes_vector.filter(ee.Filter.lt('area_m2', 2500000))
+  // Map.addLayer(Holes_vector_lt250ha, {}, "Holes_vector_lt250ha "+year, false)
+  var Holes_vector_gte250ha = Holes_vector.filter(ee.Filter.gte('area_m2', 2500000))
+  // Map.addLayer(Holes_vector_gte250ha, {}, "Holes_vector_gte250ha "+year, false)
+
+  
+  // ///////////////Get Holes - raster with errors in holes delineation corrected
+  var kernel = ee.Kernel.square({radius: 1});
+  
+  
+  //Get holes image
+  var Col10_Holes = Col10_year
+    .clip(Holes_vector)//.aside(function(image) {Map.addLayer(image, {min: 0, max: 69, palette: palette_C9, opacity: 0.5}, "Col10_Holes " + year, false);})
+    .gte(1).unmask()
+    .focal_max({kernel: kernel, iterations: 1});
+  // Map.addLayer(Col10_Holes, {}, "Col10_Holes "+year, false);
+  
+  
+  //create Col10_HolesClass_AU
+    var Col10_HolesClass = Col10 //Get Holes + Col10 class - raster
+    .select("classification_"+year)
+    .updateMask(Col10_Holes)
+    .updateMask(Col10.select("classification_"+year).neq(24)).unmask();
+  // Map.addLayer(Col10_HolesClass_lt250ha.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_lt250ha "+year, true);
+
+  var Col10_HolesClass_AU = Col10_AU.rename("classification_"+year)
+    .addBands(Col10_HolesClass.rename("HolesClass_"+year).updateMask(Col10_AU.gte(0)))
+  // Map.addLayer(Col10_HolesClass_AU.reproject({crs:'EPSG:4326',scale:30}), {bands:['classification_'+year], min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_AU "+year, true);
+  Col10_HolesClass_AU = Col10_HolesClass_AU.reduce(ee.Reducer.max());  
+  // Map.addLayer(Col10_HolesClass_AU.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_AU_max "+year, true);
+
+
+  //check for residual holes in Col10_HolesClass_AU
+  var binary = Col10_HolesClass_AU.gte(1); // 1 = urban, 0 = non-urban
+  // Map.addLayer(binary.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"binary "+year, true);
+
+  var holes = binary.not();  // 1 = hole, 0 = urban
+  // Map.addLayer(holes.reproject({crs:'EPSG:4326',scale:30}), {},"holes "+year, true);
+  
+  var connected = holes.connectedComponents({
+    connectedness: ee.Kernel.square(1),  // 8-connected
+    maxSize: 101    // optional max size for labeling (can be very high)
+  });// 3️ Label connected holes
+  // Map.addLayer(connected.reproject({crs:'EPSG:4326',scale:30}), {},"connected "+year, true);
+  
+  var counts = connected.select('labels')
+    .connectedPixelCount(101, true);// 4️ Compute pixel count per connected component
+  // Map.addLayer(counts.reproject({crs:'EPSG:4326',scale:30}), {},"counts "+year, true);
+  
+  var smallHolesMask = counts.lte(100);// 5️ Create a mask of small holes (smaller than threshold)
+  // Map.addLayer(smallHolesMask.reproject({crs:'EPSG:4326',scale:30}), {},"smallHolesMask "+year, true);
+
+  var holesFilled = binary
+    .where(smallHolesMask, 1);  // set small holes to urban (1)  // 6️ Fill small holes
+  // Map.addLayer(holesFilled.reproject({crs:'EPSG:4326',scale:30}), {},"holesFilled "+year, true);
+  
+  var Col10_HolesClass_AU_closed = holesFilled.multiply(Col10_year);// 7 Restore original value 
+  // Map.addLayer(Col10_HolesClass_AU_closed.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_AU_closed "+year, true);
+
+
+  //Holes_gte250ha
+  var Col10_Holes_gte250ha = Col10_HolesClass_AU_closed
+    .clip(Holes_vector_gte250ha)//.aside(function(image) {Map.addLayer(image, {min: 0, max: 69, palette: palette_C9, opacity: 0.5}, "Col10_Holes " + year, false);})
+    .gte(1).unmask()
+    .focal_max({kernel: kernel, iterations: 1});
+  // Map.addLayer(Col10_Holes, {}, "Col10_Holes "+year, false);
+  var Col10_HolesClass_gte250ha = Col10_HolesClass_AU_closed
+    .updateMask(Col10_Holes_gte250ha)
+    .updateMask(Col10_HolesClass_AU_closed.neq(24)).unmask()
+    .updateMask(Col10_HolesClass_AU_closed.gte(0));
+  // Map.addLayer(Col10_HolesClass_gte250ha.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_gte250ha "+year, true);
+ 
+  
+  //Holes_lt250ha
+  var Col10_HolesClass_lt250ha = Col10_HolesClass_AU_closed.updateMask(Col10_HolesClass_AU_closed.neq(24)).unmask()
+    .subtract(Col10_HolesClass_gte250ha)
+    .updateMask(Col10_HolesClass_AU_closed.gte(0));
+  // Map.addLayer(Col10_HolesClass_lt250ha.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_lt250ha "+year, true);
+  
+  
+ 
+  
+  //blend all
+  var Col10_HolesClass_AU_final = Col10_HolesClass_AU_closed.rename("classification_"+year)
+    .addBands(Col10_HolesClass_lt250ha.rename("HolesClass_lt250ha_"+year))
+    .addBands(Col10_HolesClass_gte250ha.rename("HolesClass_gte250ha_"+year));
+  // Map.addLayer(Col10_HolesClass_AU_final.reproject({crs:'EPSG:4326',scale:30}), {bands:['classification_'+year], min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_AU_final "+year, true);
+  
+  var Col10_HolesClass_AU_max = Col10_HolesClass_AU_final.reduce(ee.Reducer.max());  
+  // Map.addLayer(Col10_HolesClass_AU_max.reproject({crs:'EPSG:4326',scale:30}), {min: 0, max: 69, palette:palette_C9},"Col10_HolesClass_AU_max "+year, true);
+
+  
+  ///////////////Export
+  Col10_HolesClass_AU = Col10_HolesClass_AU_final
+    .set("version", vers)
+    .set("description", description)
+    .set("year", year);
+  var id_year = output_path+"/AUeHoles_"+year;
+  exp (Col10_HolesClass_AU, "AUeHoles_"+year, id_year, BR_BB, escala);
+});
+
+
+
