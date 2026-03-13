@@ -2,15 +2,15 @@
 ====================================== 
 
 ### Urban Vegetation ###
-Get Veg Intra and apply post-processing 
+Get Veg Intra and apply post-processing
 Collection: 10
-contact: ma.hirye@alumni.usp.br 
+contact: ma.hirye@alumni.usp.br
 
 =======================================
-*/
 
 
-/****** Initial info: version, description and output folder ******/
+
+/****** Initial info: review and update version, description and output folder ******/
 var vers_output = "v8"; 
 var step = "D-PP_VegIntra"; 
 print("step: "+ step);
@@ -232,7 +232,7 @@ var col_veg_SF_1 = ee.ImageCollection(list_veg_SF);
 /****** Temporal Filter 1 ******/
 ///Eliminates vegetation pixels where the previous year and the following year were non-vegetation, or vice versa (non-vegetation followed by vegetation).
 ///The first year considers itself and the two following years.
-///Filter is not applied in last year
+///Filter is not applied in last year.
 
 ///****** function
 var TempFilter = function(LIST_YEARS, VAL1, VAL2, COL_IN){
@@ -266,7 +266,7 @@ var TF_Middle = TempFilter (ee.List.sequence(1986,2023,1).getInfo(), 1, -1, TF_f
 // print("TF_Middle", TF_Middle);
 // Map.addLayer(ee.Image(TF_Middle.filter(ee.Filter.eq("year", 2000)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "yellow"]}, "TF_Middle 2000", true);
 
- 
+
 var col_TF = TF_Middle;
 // print("col_TF", col_TF);
 // Map.addLayer(ee.Image(col_TF.filter(ee.Filter.eq("year", year_check)).first()).reproject({crs:'EPSG:4326', scale:30}), {min:0, max:1, palette: ["white", "magenta"]}, "col_TF "+year_check, true);
@@ -426,3 +426,4 @@ if(!useROI) {
     // Map.addLayer(im_veg, {}, "im_veg "+grid, false);
   });
 }
+
