@@ -78,7 +78,6 @@ listYears.forEach(function(year){
 
   ///////////////Get Holes - vector
   var Holes_vector = ee.FeatureCollection('projects/ee-mburb-land-c10/assets/Vegetation/Holes_v1/Holes_'+year+'_All');
-  // var Holes_vector = ee.FeatureCollection('projects/ee-mburb-land-c10/assets/Vegetation/Holes/Holes_'+year+'_All');
   // Map.addLayer(Holes_vector, {}, "Holes_vector "+year, false)
   var Holes_vector_lt250ha = Holes_vector.filter(ee.Filter.lt('area_m2', 2500000))
   // Map.addLayer(Holes_vector_lt250ha, {}, "Holes_vector_lt250ha "+year, false)
